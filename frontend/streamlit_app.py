@@ -50,7 +50,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Backend API configuration
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = "https://ncf-based-movie-recommender-system.onrender.com"
 
 class MovieRecommenderApp:
     def __init__(self):
