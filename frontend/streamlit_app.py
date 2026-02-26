@@ -5,6 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from typing import List, Dict
 import time
+from backend.model_handler import MovieRecommenderModel
 
 # Configure Streamlit page
 st.set_page_config(
@@ -54,48 +55,36 @@ API_BASE_URL = "http://localhost:8000"
 
 class MovieRecommenderApp:
     def __init__(self):
-        self.api_url = API_BASE_URL
+        # Initialize the model directly in Streamlit RAM
+        self.model = MovieRecommenderModel(
+            model_path="backend/models/final_model.pth",
+            data_path="data/movies_data.csv"
+        )
+        self.movies_df = pd.read_csv("data/movies_data.csv")
     
     def check_api_health(self):
-        """Check if backend API is running"""
-        try:
-            response = requests.get(f"{self.api_url}/")
-            return response.status_code == 200
-        except:
-            return False
+        # Always return true because the model is loaded in-memory
+        return self.model is not None
     
     def get_users(self):
-        """Get list of available users"""
-        try:
-            response = requests.get(f"{self.api_url}/users")
-            if response.status_code == 200:
-                return response.json()["users"]
-            return []
-        except:
-            return []
+        unique_users = sorted(self.movies_df['userId'].unique().tolist())
+        return unique_users[:50]
     
     def get_recommendations(self, user_id: int, top_k: int = 10):
-        """Get movie recommendations for a user"""
-        try:
-            response = requests.post(
-                f"{self.api_url}/recommend",
-                json={"user_id": user_id, "top_k": top_k}
-            )
-            if response.status_code == 200:
-                return response.json()
-            return None
-        except:
-            return None
-    
+        # Call the model handler directly instead of requests.post
+        recs = self.model.get_recommendations(user_id=user_id, top_k=top_k)
+        return {"recommendations": recs} if recs else None
+
     def get_user_history(self, user_id: int):
-        """Get user's rating history"""
-        try:
-            response = requests.get(f"{self.api_url}/user/{user_id}/history")
-            if response.status_code == 200:
-                return response.json()
-            return None
-        except:
-            return None
+        user_ratings = self.movies_df[self.movies_df['userId'] == user_id]
+        if user_ratings.empty: return None
+        
+        history = user_ratings.sort_values('rating', ascending=False)
+        return {
+            "total_ratings": len(history),
+            "average_rating": round(history['rating'].mean(), 2),
+            "rating_history": history.to_dict('records')
+        }
 
 def main():
     app = MovieRecommenderApp()
