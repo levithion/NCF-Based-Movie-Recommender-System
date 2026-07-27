@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_PATH = ROOT / 'data' / 'movies_data.csv'
 MODEL_PATH = ROOT / 'backend' / 'models' / 'final_model.pth'
 CATALOG_PATH = ROOT / 'data' / 'ml-latest-small' / 'movies.csv'
+LINKS_PATH = ROOT / 'data' / 'ml-latest-small' / 'links.csv'
 OMDB_API_KEY = os.getenv('OMDB_API_KEY', '')
 OMDB_URL = 'https://www.omdbapi.com/'
 DB_PATH = Path(os.getenv('CINEMATCH_DB_PATH', str(ROOT / 'backend' / 'recommender.db')))
@@ -101,6 +102,28 @@ def omdb_request(params):
         raise HTTPException(502, f'IMDb/OMDb request failed: {exc}')
 
 
+def poster_url(value):
+    """Normalize OMDb/Amazon poster URLs for image clients."""
+    if not value or value == 'N/A':
+        return ''
+    return str(value).replace('*', '').replace('\\_', '_').strip()
+
+
+def attach_posters(items):
+    """Enrich local catalog results using their MovieLens IMDb IDs."""
+    if not OMDB_API_KEY:
+        return items
+    for item in items[:20]:
+        imdb_id = item.get('imdbId')
+        if not imdb_id:
+            continue
+        try:
+            item['poster'] = poster_url(omdb_request({'i': str(imdb_id)}).get('Poster'))
+        except HTTPException:
+            item['poster'] = ''
+    return items
+
+
 def account(account_id):
     with db() as conn:
         row = conn.execute('SELECT id, email, display_name FROM accounts WHERE id=?', (account_id,)).fetchone()
@@ -148,7 +171,7 @@ class RecommendationRequest(BaseModel):
 async def lifespan(app):
     global model_handler, movies_df
     init_db()
-    model_handler = MovieRecommenderModel(str(MODEL_PATH), str(DATA_PATH), str(CATALOG_PATH))
+    model_handler = MovieRecommenderModel(str(MODEL_PATH), str(DATA_PATH), str(CATALOG_PATH), str(LINKS_PATH))
     with db() as conn:
         imported = conn.execute('SELECT * FROM catalog_movies').fetchall()
     for item in imported:
@@ -192,7 +215,8 @@ async def login(request: LoginRequest):
 
 @app.get('/movies/search')
 async def search_movies(q: str = '', genre: Optional[str] = None, limit: int = Query(40, ge=1, le=100)):
-    return {'movies': model_handler.search_movies(q, genre, limit), 'genres': model_handler.genres()}
+    results = model_handler.search_movies(q, genre, limit)
+    return {'movies': attach_posters(results), 'genres': model_handler.genres()}
 
 
 @app.get('/external/movies/search')
@@ -201,7 +225,7 @@ async def search_external_movies(q: str = Query(..., min_length=2), page: int = 
     results = []
     for item in payload.get('Search', []):
         results.append({'imdb_id': item.get('imdbID'), 'title': item.get('Title'),
-                        'year': item.get('Year'), 'poster': '' if item.get('Poster') == 'N/A' else item.get('Poster', '')})
+                        'year': item.get('Year'), 'poster': poster_url(item.get('Poster'))})
     return {'total_results': len(results), 'movies': results}
 
 
@@ -210,7 +234,7 @@ async def external_movie_details(imdb_id: str):
     payload = omdb_request({'i': imdb_id, 'plot': 'full'})
     return {'imdb_id': payload.get('imdbID'), 'title': payload.get('Title'),
             'year': payload.get('Year'), 'genres': payload.get('Genre', 'Drama').replace(', ', '|'),
-            'poster': '' if payload.get('Poster') == 'N/A' else payload.get('Poster', ''),
+            'poster': poster_url(payload.get('Poster')),
             'plot': payload.get('Plot', ''), 'imdb_rating': payload.get('imdbRating', 'N/A'),
             'runtime': payload.get('Runtime', 'N/A'), 'director': payload.get('Director', 'N/A')}
 

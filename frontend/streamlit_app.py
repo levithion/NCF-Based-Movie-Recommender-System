@@ -47,12 +47,30 @@ def tags(genres):
     return ''.join(f'<span class="tag">{g}</span>' for g in str(genres).split('|') if g and g != '(no genres listed)')
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_poster(url):
+    """Download poster bytes so Streamlit does not rely on browser URL loading."""
+    if not url or url == 'N/A':
+        return None
+    clean_url = str(url).replace('*', '').replace('\\_', '_').strip()
+    try:
+        response = requests.get(clean_url, headers={'User-Agent': 'CineMatch/1.0'}, timeout=10)
+        if response.ok and response.headers.get('content-type', '').startswith('image/'):
+            return response.content
+    except requests.RequestException:
+        pass
+    return None
+
+
 def movie_card(item, account_id=None, action='watch'):
     movie_id = item.get('movie_id', item.get('movieId'))
     score = item.get('predicted_rating')
     score_html = f'<span class="score">★ {score}</span>' if score else ''
-    if item.get('poster') and item.get('poster') not in ('N/A', ''):
-        st.image(item['poster'], width=150)
+    poster = load_poster(item.get('poster', ''))
+    if poster:
+        st.image(poster, width=150)
+    else:
+        st.markdown('<div style="height:150px;width:100px;background:#252a37;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#a6acba;font-size:.75rem;text-align:center;">No poster</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="card"><h3>{score_html}{item["title"]}</h3><div>{tags(item.get("genres", ""))}</div></div>', unsafe_allow_html=True)
     if account_id and action == 'watch':
         if st.button('＋ Watchlist', key=f'watch-{movie_id}'):
@@ -113,7 +131,9 @@ def discover(account_id, onboarding=False):
                 cols = st.columns(4)
                 for i, item in enumerate(external.get('movies', [])):
                     with cols[i % 4]:
-                        if item.get('poster'): st.image(item['poster'], width=140)
+                        poster = load_poster(item.get('poster', ''))
+                        if poster: st.image(poster, width=140)
+                        else: st.markdown('<div style="height:180px;width:120px;background:#252a37;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#a6acba;font-size:.75rem;text-align:center;">No poster</div>', unsafe_allow_html=True)
                         st.markdown(f'**{item["title"]}**  \n{item.get("year", "")}')
                         if st.button('＋ Add to catalog', key=f'import-{item["imdb_id"]}'):
                             details = api('GET', f'/external/movies/{item["imdb_id"]}')

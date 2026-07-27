@@ -72,12 +72,18 @@ class ItemBasedNCF(nn.Module):
 class MovieRecommenderModel:
     """Movie Recommender Model Handler for FastAPI Backend"""
     
-    def __init__(self, model_path: str, data_path: str, catalog_path: Optional[str] = None):
+    def __init__(self, model_path: str, data_path: str, catalog_path: Optional[str] = None,
+                 links_path: Optional[str] = None):
         """Initialize the movie recommender model"""
         self.device = self._get_device()
         self.df = pd.read_csv(data_path)
         if catalog_path:
             catalog_source = pd.read_csv(catalog_path)
+            if links_path:
+                links = pd.read_csv(links_path, dtype={'imdbId': str})[['movieId', 'imdbId']]
+                links['imdbId'] = links['imdbId'].apply(
+                    lambda value: value if str(value).startswith('tt') else f'tt{str(value).zfill(7)}')
+                catalog_source = catalog_source.merge(links, on='movieId', how='left')
             rating_stats = self.df.groupby('movieId').agg(
                 community_rating=('rating', 'mean'), rating_count=('rating', 'count')
             ).reset_index()
@@ -279,6 +285,8 @@ class MovieRecommenderModel:
             result = result[result['genres'].str.contains(genre, na=False)]
         result = result.sort_values('movieId').head(limit)
         columns = ['movieId', 'title', 'genres', 'year']
+        if 'imdbId' in result.columns:
+            columns.append('imdbId')
         if 'poster' in result.columns:
             columns.append('poster')
         return result[columns].fillna('').to_dict('records')
