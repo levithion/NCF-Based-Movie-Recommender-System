@@ -67,6 +67,49 @@ Personalized recommendation score
 
 The NCF checkpoint is not retrained after every rating. Ratings can be collected for scheduled model retraining later.
 
+## 🧩 Prediction architecture
+
+The prediction service combines collaborative, content, and popularity signals. Existing movies can use the trained NCF movie signal, while newly imported movies are handled by the content-based cold-start path.
+
+```mermaid
+flowchart TD
+    A[User ratings] --> B[FastAPI /recommend endpoint]
+    B --> C[Build user taste profile]
+
+    C --> D1[Known movie candidates]
+    C --> D2[New movie candidates]
+
+    D1 --> E1[PyTorch NCF movie embedding and bias signal]
+    D1 --> E2[TF-IDF title and genre similarity]
+    D1 --> E3[Popularity signal]
+    E1 --> F[Hybrid score]
+    E2 --> F
+    E3 --> F
+
+    D2 --> G1[TF-IDF title and genre similarity]
+    D2 --> G2[Popularity signal]
+    G1 --> H[Cold-start score]
+    G2 --> H
+
+    F --> I[Remove already-rated movies]
+    H --> I
+    I --> J[Sort by final score]
+    J --> K[Return top-K recommendations]
+    K --> L[Streamlit recommendation cards]
+
+    M[IMDb / OMDb imported metadata] --> D2
+    M --> G1
+```
+
+### Prediction flow
+
+1. The user ratings stored in SQLite are sent to the FastAPI recommendation endpoint.
+2. The recommendation engine builds a taste profile from the user's rated titles and genres.
+3. Known movies receive a blended collaborative, content, and popularity score.
+4. New movies without learned NCF embeddings receive a content-similarity and popularity score.
+5. Movies already rated by the user are removed.
+6. The remaining candidates are sorted and the highest-scoring top-K movies are shown in Streamlit.
+
 ## 🏗️ Application architecture
 
 ```text
