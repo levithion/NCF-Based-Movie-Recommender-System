@@ -262,6 +262,8 @@ class MovieRecommenderModel:
             row = row.iloc[0]
             item = {'movieId': int(movie_id), 'title': str(row['title']),
                     'genres': str(row['genres'])}
+            if 'poster' in row.index and pd.notna(row['poster']):
+                item['poster'] = str(row['poster'])
             if movie_id in scores:
                 item['predicted_rating'] = float(scores[movie_id])
             result.append(item)
@@ -276,7 +278,30 @@ class MovieRecommenderModel:
         if genre and genre != 'All genres':
             result = result[result['genres'].str.contains(genre, na=False)]
         result = result.sort_values('movieId').head(limit)
-        return result[['movieId', 'title', 'genres', 'year']].fillna('').to_dict('records')
+        columns = ['movieId', 'title', 'genres', 'year']
+        if 'poster' in result.columns:
+            columns.append('poster')
+        return result[columns].fillna('').to_dict('records')
+
+    def _rebuild_content_index(self):
+        self.catalog['content_text'] = (
+            self.catalog['title'].fillna('') + ' ' +
+            self.catalog['genres'].fillna('').str.replace('|', ' ', regex=False)
+        )
+        self.content_matrix = self.content_vectorizer.fit_transform(self.catalog['content_text'])
+        self.catalog_positions = {int(movie_id): idx for idx, movie_id in enumerate(self.catalog['movieId'])}
+
+    def add_catalog_movie(self, item):
+        """Add a metadata-only movie without changing NCF embedding dimensions."""
+        movie_id = int(item.get('movie_id', item.get('movieId')))
+        if movie_id in self.catalog_positions:
+            return
+        row = {'movieId': movie_id, 'imdbId': item.get('imdb_id', item.get('imdbId', '')),
+               'title': item['title'], 'genres': item.get('genres', 'Drama'),
+               'year': item.get('year'), 'poster': item.get('poster', ''),
+               'community_rating': 0.0, 'rating_count': 0}
+        self.catalog = pd.concat([self.catalog, pd.DataFrame([row])], ignore_index=True)
+        self._rebuild_content_index()
 
     def similar_movies(self, movie_id: int, top_k=8):
         """Find similar movies using NCF embeddings or content features."""

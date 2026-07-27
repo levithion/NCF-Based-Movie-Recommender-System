@@ -51,7 +51,9 @@ def movie_card(item, account_id=None, action='watch'):
     movie_id = item.get('movie_id', item.get('movieId'))
     score = item.get('predicted_rating')
     score_html = f'<span class="score">★ {score}</span>' if score else ''
-    st.markdown(f'<div class="card"><h3>{score_html}{item["title"]}</h3><div>{tags(item["genres"])}</div></div>', unsafe_allow_html=True)
+    if item.get('poster') and item.get('poster') not in ('N/A', ''):
+        st.image(item['poster'], width=150)
+    st.markdown(f'<div class="card"><h3>{score_html}{item["title"]}</h3><div>{tags(item.get("genres", ""))}</div></div>', unsafe_allow_html=True)
     if account_id and action == 'watch':
         if st.button('＋ Watchlist', key=f'watch-{movie_id}'):
             api('POST', '/watchlist', json={'account_id': account_id, 'movie_id': int(movie_id)})
@@ -102,27 +104,44 @@ def home(account_id):
 
 def discover(account_id, onboarding=False):
     st.markdown('<div class="eyebrow">Discover</div><h1>Browse the catalog</h1>', unsafe_allow_html=True)
-    q = st.text_input('Search by title', placeholder='Try “Inception”, “Star Wars”…')
-    result = api('GET', '/movies/search', params={'q': q, 'limit': 50})
-    if not result: return
-    genres = ['All genres'] + result.get('genres', [])
-    genre = st.selectbox('Filter by genre', genres)
-    if genre != 'All genres': result = api('GET', '/movies/search', params={'q': q, 'genre': genre, 'limit': 50}) or result
-    st.caption(f'{len(result.get("movies", []))} movies')
-    cols = st.columns(3)
-    for i, item in enumerate(result.get('movies', [])):
-        with cols[i % 3]:
-            movie_card(item, account_id)
-            with st.expander('Rate / similar'):
-                rating = st.slider('Your rating', .5, 5., 4., .5, key=f'rate-{item["movieId"]}')
-                if st.button('Save rating', key=f'save-{item["movieId"]}'):
-                    api('POST', '/ratings', json={'account_id': account_id, 'movie_id': item['movieId'], 'rating': rating})
-                    st.toast('Taste updated'); st.rerun()
-                if st.button('Show similar', key=f'similar-{item["movieId"]}'):
-                    similar = api('GET', f'/movies/{item["movieId"]}/similar')
-                    if similar:
-                        st.write('Because you may like:')
-                        for match in similar['movies'][:4]: st.write(f'• {match["title"]}')
+    local_tab, imdb_tab = st.tabs(['CineMatch catalog', 'IMDb search'])
+    with imdb_tab:
+        imdb_query = st.text_input('Search IMDb / OMDb', placeholder='Search any movie title', key='imdb-query')
+        if imdb_query:
+            external = api('GET', '/external/movies/search', params={'q': imdb_query})
+            if external:
+                cols = st.columns(4)
+                for i, item in enumerate(external.get('movies', [])):
+                    with cols[i % 4]:
+                        if item.get('poster'): st.image(item['poster'], width=140)
+                        st.markdown(f'**{item["title"]}**  \n{item.get("year", "")}')
+                        if st.button('＋ Add to catalog', key=f'import-{item["imdb_id"]}'):
+                            details = api('GET', f'/external/movies/{item["imdb_id"]}')
+                            if details:
+                                api('POST', '/catalog/import', json=details)
+                                st.toast('Movie added to CineMatch')
+    with local_tab:
+        q = st.text_input('Search by title', placeholder='Search your imported and MovieLens movies')
+        result = api('GET', '/movies/search', params={'q': q, 'limit': 50})
+        if not result: return
+        genres = ['All genres'] + result.get('genres', [])
+        genre = st.selectbox('Filter by genre', genres)
+        if genre != 'All genres': result = api('GET', '/movies/search', params={'q': q, 'genre': genre, 'limit': 50}) or result
+        st.caption(f'{len(result.get("movies", []))} movies')
+        cols = st.columns(3)
+        for i, item in enumerate(result.get('movies', [])):
+            with cols[i % 3]:
+                movie_card(item, account_id)
+                with st.expander('Rate / similar'):
+                    rating = st.slider('Your rating', .5, 5., 4., .5, key=f'rate-{item["movieId"]}')
+                    if st.button('Save rating', key=f'save-{item["movieId"]}'):
+                        api('POST', '/ratings', json={'account_id': account_id, 'movie_id': item['movieId'], 'rating': rating})
+                        st.toast('Taste updated'); st.rerun()
+                    if st.button('Show similar', key=f'similar-{item["movieId"]}'):
+                        similar = api('GET', f'/movies/{item["movieId"]}/similar')
+                        if similar:
+                            st.write('Because you may like:')
+                            for match in similar['movies'][:4]: st.write(f'• {match["title"]}')
 
 
 def watchlist(account_id):
