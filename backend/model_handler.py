@@ -5,6 +5,8 @@ import numpy as np
 from typing import List, Dict, Optional
 import logging
 from difflib import SequenceMatcher
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -70,13 +72,33 @@ class ItemBasedNCF(nn.Module):
 class MovieRecommenderModel:
     """Movie Recommender Model Handler for FastAPI Backend"""
     
-    def __init__(self, model_path: str, data_path: str):
+    def __init__(self, model_path: str, data_path: str, catalog_path: Optional[str] = None):
         """Initialize the movie recommender model"""
         self.device = self._get_device()
         self.df = pd.read_csv(data_path)
-        self.catalog = self.df.drop_duplicates('movieId').copy()
+        if catalog_path:
+            catalog_source = pd.read_csv(catalog_path)
+            rating_stats = self.df.groupby('movieId').agg(
+                community_rating=('rating', 'mean'), rating_count=('rating', 'count')
+            ).reset_index()
+            self.catalog = catalog_source.merge(rating_stats, on='movieId', how='left')
+        else:
+            self.catalog = self.df.drop_duplicates('movieId').copy()
+        if 'community_rating' not in self.catalog:
+            self.catalog['community_rating'] = 0.0
+        if 'rating_count' not in self.catalog:
+            self.catalog['rating_count'] = 0
+        self.catalog['community_rating'] = self.catalog['community_rating'].fillna(0)
+        self.catalog['rating_count'] = self.catalog['rating_count'].fillna(0)
         self.catalog['year'] = self.catalog['title'].str.extract(r'\((\d{4})\)')[0]
         self.catalog['year'] = pd.to_numeric(self.catalog['year'], errors='coerce')
+        self.catalog['content_text'] = (
+            self.catalog['title'].fillna('') + ' ' +
+            self.catalog['genres'].fillna('').str.replace('|', ' ', regex=False)
+        )
+        self.content_vectorizer = TfidfVectorizer(stop_words='english', ngram_range=(1, 2))
+        self.content_matrix = self.content_vectorizer.fit_transform(self.catalog['content_text'])
+        self.catalog_positions = {int(movie_id): idx for idx, movie_id in enumerate(self.catalog['movieId'])}
         
         logger.info(f"Loaded dataset with {len(self.df)} ratings")
         logger.info(f"Dataset columns: {self.df.columns.tolist()}")
@@ -257,15 +279,14 @@ class MovieRecommenderModel:
         return result[['movieId', 'title', 'genres', 'year']].fillna('').to_dict('records')
 
     def similar_movies(self, movie_id: int, top_k=8):
-        """Find nearest movies in the learned movie-embedding space."""
-        if movie_id not in self.movie_to_idx:
+        """Find similar movies using NCF embeddings or content features."""
+        if movie_id not in self.catalog_positions:
             return []
-        target = self.model.movie_embedding.weight[self.movie_to_idx[movie_id]].detach()
-        embeddings = self.model.movie_embedding.weight.detach()
-        similarities = torch.nn.functional.cosine_similarity(target.unsqueeze(0), embeddings)
-        similarities[self.movie_to_idx[movie_id]] = -1
-        values, indices = torch.topk(similarities, k=min(top_k, len(indices := similarities)))
-        scores = {self.idx_to_movie[int(i)]: float(v) for i, v in zip(indices, values)}
+        position = self.catalog_positions[movie_id]
+        similarities = cosine_similarity(self.content_matrix[position], self.content_matrix).ravel()
+        similarities[position] = -1
+        nearest = similarities.argsort()[::-1][:top_k]
+        scores = {int(self.catalog.iloc[int(i)]['movieId']): float(similarities[i]) for i in nearest}
         return self._details(scores.keys(), scores)
 
     def cold_start_recommendations(self, ratings, top_k=10):
@@ -289,6 +310,58 @@ class MovieRecommenderModel:
         values, indices = torch.topk(similarities, k=min(top_k, len(similarities)))
         scores = {self.idx_to_movie[int(i)]: float(max(0.5, min(5.0, 3.5 + v.item())))
                   for i, v in zip(indices, values)}
+        return self._details(scores.keys(), scores)
+
+    def hybrid_recommendations(self, ratings, top_k=10):
+        """Blend NCF predictions with content similarity and popularity.
+
+        Movies absent from the NCF checkpoint receive a content-based score,
+        allowing newly added catalog movies to be recommended immediately.
+        """
+        if not ratings:
+            return []
+        rated = {int(r['movie_id']): float(r['rating']) for r in ratings}
+        profile_rows, profile_weights = [], []
+        for movie_id, rating in rated.items():
+            if movie_id in self.catalog_positions:
+                profile_rows.append(self.content_matrix[self.catalog_positions[movie_id]])
+                profile_weights.append(max(rating - 2.5, 0.25))
+        if not profile_rows:
+            return []
+        profile = profile_rows[0].multiply(profile_weights[0])
+        for row, weight in zip(profile_rows[1:], profile_weights[1:]):
+            profile = profile + row.multiply(weight)
+        content_scores = cosine_similarity(profile, self.content_matrix).ravel()
+        candidates = []
+        known_movie_ids = [movie_id for movie_id in self.movie_to_idx if movie_id not in rated]
+        if known_movie_ids:
+            movie_indices = torch.tensor([self.movie_to_idx[movie_id] for movie_id in known_movie_ids], device=self.device)
+            # The account is new to the NCF model, so content carries the profile.
+            # Use the model's learned movie bias as the collaborative prior.
+            with torch.no_grad():
+                ncf_prior = self.model.movie_bias(movie_indices).squeeze().detach().cpu().numpy()
+            prior_min, prior_max = float(ncf_prior.min()), float(ncf_prior.max())
+            prior_span = max(prior_max - prior_min, 1e-6)
+        else:
+            ncf_prior = []
+            prior_min, prior_span = 0, 1
+        for movie_id in self.catalog['movieId'].astype(int):
+            if movie_id in rated:
+                continue
+            position = self.catalog_positions[movie_id]
+            content = max(0.0, float(content_scores[position]))
+            row = self.catalog.iloc[position]
+            popularity = min(float(row['rating_count']) / 100.0, 1.0) if row['rating_count'] else 0.0
+            if movie_id in self.movie_to_idx:
+                prior = (float(ncf_prior[known_movie_ids.index(movie_id)]) - prior_min) / prior_span
+                score = 0.55 * prior + 0.40 * content + 0.05 * popularity
+                predicted = 2.5 + 2.5 * score
+            else:
+                score = 0.90 * content + 0.10 * popularity
+                predicted = 2.5 + 2.5 * score
+            candidates.append((movie_id, score, predicted))
+        candidates.sort(key=lambda item: item[1], reverse=True)
+        scores = {movie_id: predicted for movie_id, _, predicted in candidates[:top_k]}
         return self._details(scores.keys(), scores)
 
     def genres(self):

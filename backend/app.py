@@ -21,6 +21,7 @@ from model_handler import MovieRecommenderModel
 ROOT = Path(__file__).resolve().parent.parent
 DATA_PATH = ROOT / 'data' / 'movies_data.csv'
 MODEL_PATH = ROOT / 'backend' / 'models' / 'final_model.pth'
+CATALOG_PATH = ROOT / 'data' / 'ml-latest-small' / 'movies.csv'
 DB_PATH = ROOT / 'backend' / 'recommender.db'
 model_handler = None
 movies_df = None
@@ -112,7 +113,7 @@ class RecommendationRequest(BaseModel):
 async def lifespan(app):
     global model_handler, movies_df
     init_db()
-    model_handler = MovieRecommenderModel(str(MODEL_PATH), str(DATA_PATH))
+    model_handler = MovieRecommenderModel(str(MODEL_PATH), str(DATA_PATH), str(CATALOG_PATH))
     movies_df = model_handler.catalog
     yield
 
@@ -171,7 +172,7 @@ async def recommend(request: RecommendationRequest):
     ratings = ratings_for(request.account_id)
     if not ratings:
         return {'account_id': request.account_id, 'recommendations': [], 'message': 'Rate a few movies to get recommendations'}
-    recommendations = model_handler.cold_start_recommendations(ratings, request.top_k)
+    recommendations = model_handler.hybrid_recommendations(ratings, request.top_k)
     return {'account_id': request.account_id, 'recommendations': [
         {'movie_id': item['movieId'], 'title': item['title'], 'genres': item['genres'],
          'predicted_rating': round(item.get('predicted_rating', 0), 2)} for item in recommendations]}

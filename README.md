@@ -13,7 +13,7 @@ CineMatch is a Streamlit movie discovery app backed by a PyTorch Neural Collabor
 - A redesigned dark, cinematic Streamlit interface
 - FastAPI endpoints that can also support a mobile or React client
 
-The current feedback loop is designed for immediate demo feedback: ratings are saved to SQLite and recommendations are regenerated from the user's rated-movie embedding profile. The original NCF checkpoint is not modified on every click. For a production system, ratings can later be used for scheduled retraining or an online-learning service.
+The feedback loop is designed for immediate demo feedback: ratings are saved to SQLite and recommendations are regenerated using the hybrid scorer. Known movies combine the NCF movie-bias prior, content similarity, and popularity. New catalog movies with no NCF embedding use content similarity and popularity until they collect ratings. The original NCF checkpoint is not modified on every click; ratings can later be used for scheduled retraining.
 
 ## Project structure
 
@@ -88,7 +88,7 @@ Interactive API documentation is available at `http://localhost:8000/docs` while
 
 ## Model notes
 
-The checkpoint uses user and movie embeddings, bias terms, and an MLP prediction path. The app uses the movie embeddings for similarity and cold-start onboarding. Recommendations exclude movies already rated by the account.
+The checkpoint uses user and movie embeddings, bias terms, and an MLP prediction path. The hybrid layer builds TF-IDF content features from movie titles and genres. Add a new movie to `data/ml-latest-small/movies.csv` and redeploy the backend; it can then be searched and recommended without changing checkpoint dimensions. Recommendations exclude movies already rated by the account.
 
 ## Dataset
 
