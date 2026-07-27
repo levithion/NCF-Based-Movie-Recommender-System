@@ -8,9 +8,11 @@ from pathlib import Path
 import hashlib
 import secrets
 import sqlite3
+import os
 from typing import List, Optional
 
 import pandas as pd
+import requests
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,7 +24,9 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_PATH = ROOT / 'data' / 'movies_data.csv'
 MODEL_PATH = ROOT / 'backend' / 'models' / 'final_model.pth'
 CATALOG_PATH = ROOT / 'data' / 'ml-latest-small' / 'movies.csv'
-DB_PATH = ROOT / 'backend' / 'recommender.db'
+OMDB_API_KEY = os.getenv('OMDB_API_KEY', '')
+OMDB_URL = 'https://www.omdbapi.com/'
+DB_PATH = Path(os.getenv('CINEMATCH_DB_PATH', str(ROOT / 'backend' / 'recommender.db')))
 model_handler = None
 movies_df = None
 
@@ -52,6 +56,10 @@ def init_db():
             added_at TEXT DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY(account_id, movie_id), FOREIGN KEY(account_id) REFERENCES accounts(id)
         );
+        CREATE TABLE IF NOT EXISTS catalog_movies (
+            movie_id INTEGER PRIMARY KEY, imdb_id TEXT UNIQUE NOT NULL,
+            title TEXT NOT NULL, genres TEXT NOT NULL, year TEXT, poster TEXT
+        );
         ''')
 
 
@@ -67,11 +75,26 @@ def verify_password(password, stored):
 
 
 def movie(movie_id):
-    rows = movies_df[movies_df.movieId == movie_id]
+    rows = model_handler.catalog[model_handler.catalog.movieId == movie_id]
     if rows.empty:
         raise HTTPException(404, 'Movie not found')
     row = rows.iloc[0]
-    return {'movie_id': int(row.movieId), 'title': str(row.title), 'genres': str(row.genres)}
+    poster = row['poster'] if 'poster' in row.index and pd.notna(row['poster']) else ''
+    return {'movie_id': int(row.movieId), 'title': str(row.title), 'genres': str(row.genres), 'poster': str(poster)}
+
+
+def omdb_request(params):
+    if not OMDB_API_KEY:
+        raise HTTPException(503, 'OMDB_API_KEY is not configured on the backend')
+    try:
+        response = requests.get(OMDB_URL, params={**params, 'apikey': OMDB_API_KEY}, timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get('Response') == 'False':
+            raise HTTPException(404, payload.get('Error', 'Movie not found'))
+        return payload
+    except requests.RequestException as exc:
+        raise HTTPException(502, f'IMDb/OMDb request failed: {exc}')
 
 
 def account(account_id):
@@ -104,6 +127,14 @@ class WatchlistRequest(BaseModel):
     movie_id: int
 
 
+class CatalogImportRequest(BaseModel):
+    imdb_id: str
+    title: str
+    year: Optional[str] = None
+    genres: str = 'Drama'
+    poster: str = ''
+
+
 class RecommendationRequest(BaseModel):
     account_id: int
     top_k: int = Field(default=12, ge=1, le=50)
@@ -114,6 +145,10 @@ async def lifespan(app):
     global model_handler, movies_df
     init_db()
     model_handler = MovieRecommenderModel(str(MODEL_PATH), str(DATA_PATH), str(CATALOG_PATH))
+    with db() as conn:
+        imported = conn.execute('SELECT * FROM catalog_movies').fetchall()
+    for item in imported:
+        model_handler.add_catalog_movie(dict(item))
     movies_df = model_handler.catalog
     yield
 
@@ -148,12 +183,48 @@ async def login(request: LoginRequest):
         row = conn.execute('SELECT * FROM accounts WHERE email=?', (request.email.strip().lower(),)).fetchone()
     if not row or not verify_password(request.password, row['password_hash']):
         raise HTTPException(401, 'Invalid email or password')
-    return {'account': account(row['id'])}
+    return {'account': {'id': row['id'], 'email': row['email'], 'display_name': row['display_name']}}
 
 
 @app.get('/movies/search')
 async def search_movies(q: str = '', genre: Optional[str] = None, limit: int = Query(40, ge=1, le=100)):
     return {'movies': model_handler.search_movies(q, genre, limit), 'genres': model_handler.genres()}
+
+
+@app.get('/external/movies/search')
+async def search_external_movies(q: str = Query(..., min_length=2), page: int = Query(1, ge=1, le=100)):
+    payload = omdb_request({'s': q, 'type': 'movie', 'page': page})
+    results = []
+    for item in payload.get('Search', []):
+        results.append({'imdb_id': item.get('imdbID'), 'title': item.get('Title'),
+                        'year': item.get('Year'), 'poster': '' if item.get('Poster') == 'N/A' else item.get('Poster', '')})
+    return {'total_results': len(results), 'movies': results}
+
+
+@app.get('/external/movies/{imdb_id}')
+async def external_movie_details(imdb_id: str):
+    payload = omdb_request({'i': imdb_id, 'plot': 'full'})
+    return {'imdb_id': payload.get('imdbID'), 'title': payload.get('Title'),
+            'year': payload.get('Year'), 'genres': payload.get('Genre', 'Drama').replace(', ', '|'),
+            'poster': '' if payload.get('Poster') == 'N/A' else payload.get('Poster', ''),
+            'plot': payload.get('Plot', ''), 'imdb_rating': payload.get('imdbRating', 'N/A'),
+            'runtime': payload.get('Runtime', 'N/A'), 'director': payload.get('Director', 'N/A')}
+
+
+@app.post('/catalog/import')
+async def import_catalog_movie(request: CatalogImportRequest):
+    imdb_column = model_handler.catalog.get('imdbId', pd.Series('', index=model_handler.catalog.index)).astype(str)
+    existing = model_handler.catalog[imdb_column == request.imdb_id]
+    if not existing.empty:
+        return movie(int(existing.iloc[0].movieId))
+    new_id = int(model_handler.catalog.movieId.max()) + 1
+    item = {'movie_id': new_id, 'imdb_id': request.imdb_id, 'title': request.title,
+            'year': request.year, 'genres': request.genres, 'poster': request.poster}
+    with db() as conn:
+        conn.execute('INSERT INTO catalog_movies(movie_id,imdb_id,title,genres,year,poster) VALUES(?,?,?,?,?,?)',
+                     (new_id, request.imdb_id, request.title, request.genres, request.year, request.poster))
+    model_handler.add_catalog_movie(item)
+    return movie(new_id)
 
 
 @app.get('/movies/{movie_id}/similar')
@@ -175,6 +246,7 @@ async def recommend(request: RecommendationRequest):
     recommendations = model_handler.hybrid_recommendations(ratings, request.top_k)
     return {'account_id': request.account_id, 'recommendations': [
         {'movie_id': item['movieId'], 'title': item['title'], 'genres': item['genres'],
+         'poster': item.get('poster', ''),
          'predicted_rating': round(item.get('predicted_rating', 0), 2)} for item in recommendations]}
 
 

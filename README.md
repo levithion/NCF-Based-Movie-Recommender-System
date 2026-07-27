@@ -8,6 +8,7 @@ CineMatch is a Streamlit movie discovery app backed by a PyTorch Neural Collabor
 - New-user onboarding through movie ratings
 - Personalized recommendations after five ratings
 - Search by title and filter by genre
+- IMDb/OMDb search for new movies and poster artwork
 - Similar-movie recommendations from learned movie embeddings
 - Persistent ratings and watchlists in `backend/recommender.db`
 - A redesigned dark, cinematic Streamlit interface
@@ -67,7 +68,17 @@ CINEMATCH_API_URL = "https://your-public-backend.example.com"
 
 The FastAPI backend must be deployed separately on a public HTTPS URL (for example, Render, Railway, or Fly.io). Use that URL as the secret value, without a trailing endpoint such as `/docs`.
 
-The SQLite database is created automatically on first API startup. It is intentionally local for this project; use a managed database and real session/token authentication before deploying for multiple users.
+### IMDb/OMDb integration
+
+The app uses the OMDb API for IMDb-linked title search, IMDb IDs, movie details, and poster URLs. OMDb requires an API key; request one from the [official OMDb API page](https://www.omdbapi.com/apikey.aspx), then configure it only on the backend host:
+
+```text
+OMDB_API_KEY=your_omdb_key
+```
+
+On Render, add `OMDB_API_KEY` under the backend service's Environment settings and redeploy. The Streamlit frontend never receives this key. In Discover → IMDb search, users can search a title, view posters, and import a movie into the CineMatch catalog. Imported movies are stored in SQLite and become available to the hybrid recommender.
+
+The SQLite database is created automatically on first API startup. For Render, attach a persistent disk and set `CINEMATCH_DB_PATH=/var/data/recommender.db`; otherwise accounts, ratings, and watchlists can disappear when the service is redeployed or restarted. For a larger deployment, use a managed database and real session/token authentication.
 
 ## API overview
 
