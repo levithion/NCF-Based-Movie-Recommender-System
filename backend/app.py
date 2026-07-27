@@ -134,6 +134,8 @@ async def signup(request: AuthRequest):
         with db() as conn:
             cursor = conn.execute('INSERT INTO accounts(email,password_hash,display_name) VALUES (?,?,?)',
                                   (email, hash_password(request.password), request.display_name.strip()))
+            # Commit before reading through the separate connection used by account().
+            conn.commit()
             return {'account': account(cursor.lastrowid), 'message': 'Account created'}
     except sqlite3.IntegrityError:
         raise HTTPException(409, 'An account with this email already exists')
