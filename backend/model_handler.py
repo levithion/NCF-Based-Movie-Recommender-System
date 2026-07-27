@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 from typing import List, Dict, Optional
 import logging
+from difflib import SequenceMatcher
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,9 @@ class MovieRecommenderModel:
         """Initialize the movie recommender model"""
         self.device = self._get_device()
         self.df = pd.read_csv(data_path)
+        self.catalog = self.df.drop_duplicates('movieId').copy()
+        self.catalog['year'] = self.catalog['title'].str.extract(r'\((\d{4})\)')[0]
+        self.catalog['year'] = pd.to_numeric(self.catalog['year'], errors='coerce')
         
         logger.info(f"Loaded dataset with {len(self.df)} ratings")
         logger.info(f"Dataset columns: {self.df.columns.tolist()}")
@@ -225,6 +229,71 @@ class MovieRecommenderModel:
         except Exception as e:
             logger.error(f"Error generating recommendations for user {user_id}: {str(e)}")
             return []
+
+    def _details(self, movie_ids, scores=None):
+        scores = scores or {}
+        result = []
+        for movie_id in movie_ids:
+            row = self.catalog[self.catalog['movieId'] == movie_id]
+            if row.empty:
+                continue
+            row = row.iloc[0]
+            item = {'movieId': int(movie_id), 'title': str(row['title']),
+                    'genres': str(row['genres'])}
+            if movie_id in scores:
+                item['predicted_rating'] = float(scores[movie_id])
+            result.append(item)
+        return result
+
+    def search_movies(self, query='', genre=None, limit=40):
+        """Search the movie catalog without requiring a model inference."""
+        result = self.catalog.copy()
+        query = (query or '').strip().lower()
+        if query:
+            result = result[result['title'].str.lower().str.contains(query, na=False)]
+        if genre and genre != 'All genres':
+            result = result[result['genres'].str.contains(genre, na=False)]
+        result = result.sort_values('movieId').head(limit)
+        return result[['movieId', 'title', 'genres', 'year']].fillna('').to_dict('records')
+
+    def similar_movies(self, movie_id: int, top_k=8):
+        """Find nearest movies in the learned movie-embedding space."""
+        if movie_id not in self.movie_to_idx:
+            return []
+        target = self.model.movie_embedding.weight[self.movie_to_idx[movie_id]].detach()
+        embeddings = self.model.movie_embedding.weight.detach()
+        similarities = torch.nn.functional.cosine_similarity(target.unsqueeze(0), embeddings)
+        similarities[self.movie_to_idx[movie_id]] = -1
+        values, indices = torch.topk(similarities, k=min(top_k, len(indices := similarities)))
+        scores = {self.idx_to_movie[int(i)]: float(v) for i, v in zip(indices, values)}
+        return self._details(scores.keys(), scores)
+
+    def cold_start_recommendations(self, ratings, top_k=10):
+        """Recommend from a new user's explicit onboarding ratings."""
+        if not ratings:
+            return []
+        rated = {int(r['movie_id']): float(r['rating']) for r in ratings}
+        liked = [(self.movie_to_idx[mid], rating) for mid, rating in rated.items()
+                 if mid in self.movie_to_idx and rating >= 3.5]
+        if not liked:
+            liked = [(self.movie_to_idx[mid], rating) for mid, rating in rated.items()
+                     if mid in self.movie_to_idx]
+        embeddings = self.model.movie_embedding.weight.detach()
+        liked_indices = torch.tensor([x[0] for x in liked], device=embeddings.device)
+        weights = torch.tensor([max(x[1] - 2.5, 0.25) for x in liked], device=embeddings.device)
+        profile = (embeddings[liked_indices] * weights.unsqueeze(1)).sum(0) / weights.sum()
+        similarities = torch.nn.functional.cosine_similarity(profile.unsqueeze(0), embeddings)
+        for movie_id in rated:
+            if movie_id in self.movie_to_idx:
+                similarities[self.movie_to_idx[movie_id]] = -1
+        values, indices = torch.topk(similarities, k=min(top_k, len(similarities)))
+        scores = {self.idx_to_movie[int(i)]: float(max(0.5, min(5.0, 3.5 + v.item())))
+                  for i, v in zip(indices, values)}
+        return self._details(scores.keys(), scores)
+
+    def genres(self):
+        return sorted({genre for value in self.catalog['genres'].fillna('')
+                        for genre in str(value).split('|') if genre and genre != '(no genres listed)'})
     
     def health_check(self) -> Dict:
         """Perform a health check on the model"""

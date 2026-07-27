@@ -1,208 +1,221 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+"""FastAPI service for the NCF movie recommender.
+
+The SQLite store is intentionally local and lightweight for this demo. Replace it
+with PostgreSQL or another managed database for a multi-instance deployment.
+"""
+from contextlib import asynccontextmanager
+from pathlib import Path
+import hashlib
+import secrets
+import sqlite3
 from typing import List, Optional
-import torch
+
 import pandas as pd
-import numpy as np
-from model_handler import MovieRecommenderModel
 import uvicorn
-import logging
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from model_handler import MovieRecommenderModel
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="🎬 Movie Recommender API",
-    description="AI-powered movie recommendation system using Neural Collaborative Filtering",
-    version="1.0.0"
-)
-
-# Add CORS middleware for frontend communication
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your frontend URL
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Global variables for model and data
+ROOT = Path(__file__).resolve().parent.parent
+DATA_PATH = ROOT / 'data' / 'movies_data.csv'
+MODEL_PATH = ROOT / 'backend' / 'models' / 'final_model.pth'
+DB_PATH = ROOT / 'backend' / 'recommender.db'
 model_handler = None
 movies_df = None
 
-# Pydantic models for API requests/responses
+
+def db():
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def init_db():
+    with db() as conn:
+        conn.executescript('''
+        CREATE TABLE IF NOT EXISTS accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
+            display_name TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS user_ratings (
+            account_id INTEGER NOT NULL, movie_id INTEGER NOT NULL,
+            rating REAL NOT NULL CHECK(rating >= 0.5 AND rating <= 5),
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(account_id, movie_id), FOREIGN KEY(account_id) REFERENCES accounts(id)
+        );
+        CREATE TABLE IF NOT EXISTS watchlist (
+            account_id INTEGER NOT NULL, movie_id INTEGER NOT NULL,
+            added_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(account_id, movie_id), FOREIGN KEY(account_id) REFERENCES accounts(id)
+        );
+        ''')
+
+
+def hash_password(password: str, salt: Optional[str] = None):
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 120_000).hex()
+    return f'{salt}${digest}'
+
+
+def verify_password(password, stored):
+    salt, _ = stored.split('$', 1)
+    return secrets.compare_digest(hash_password(password, salt), stored)
+
+
+def movie(movie_id):
+    rows = movies_df[movies_df.movieId == movie_id]
+    if rows.empty:
+        raise HTTPException(404, 'Movie not found')
+    row = rows.iloc[0]
+    return {'movie_id': int(row.movieId), 'title': str(row.title), 'genres': str(row.genres)}
+
+
+def account(account_id):
+    with db() as conn:
+        row = conn.execute('SELECT id, email, display_name FROM accounts WHERE id=?', (account_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, 'Account not found')
+    return dict(row)
+
+
+class AuthRequest(BaseModel):
+    email: str
+    password: str = Field(min_length=6)
+    display_name: str = Field(min_length=1, max_length=60)
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class RatingRequest(BaseModel):
+    account_id: int
+    movie_id: int
+    rating: float = Field(ge=0.5, le=5)
+
+
+class WatchlistRequest(BaseModel):
+    account_id: int
+    movie_id: int
+
+
 class RecommendationRequest(BaseModel):
-    user_id: int
-    top_k: int = 10
+    account_id: int
+    top_k: int = Field(default=12, ge=1, le=50)
 
-class MovieRecommendation(BaseModel):
-    movie_id: int
-    title: str
-    genres: str
-    predicted_rating: float
 
-class RecommendationResponse(BaseModel):
-    user_id: int
-    recommendations: List[MovieRecommendation]
-    total_recommendations: int
-
-class UserRating(BaseModel):
-    user_id: int
-    movie_id: int
-    rating: float
-
-class HealthResponse(BaseModel):
-    status: str
-    message: str
-    model_loaded: bool
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize model and data when server starts"""
+@asynccontextmanager
+async def lifespan(app):
     global model_handler, movies_df
-    
+    init_db()
+    model_handler = MovieRecommenderModel(str(MODEL_PATH), str(DATA_PATH))
+    movies_df = model_handler.catalog
+    yield
+
+
+app = FastAPI(title='CineMatch API', version='2.0.0', lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_credentials=True,
+                   allow_methods=['*'], allow_headers=['*'])
+
+
+@app.get('/')
+async def health():
+    return {'status': 'healthy', 'model_loaded': model_handler is not None}
+
+
+@app.post('/auth/signup')
+async def signup(request: AuthRequest):
+    email = request.email.strip().lower()
     try:
-        logger.info("🚀 Starting Movie Recommender API...")
-        
-        # Load the trained model
-        model_handler = MovieRecommenderModel(
-            model_path="models/final_model.pth",
-            data_path="../data/movies_data.csv"
-        )
-        
-        # Load movies data
-        movies_df = pd.read_csv("../data/movies_data.csv")
-        
-        logger.info("✅ Model and data loaded successfully!")
-        
-    except Exception as e:
-        logger.error(f"❌ Error during startup: {str(e)}")
-        raise e
+        with db() as conn:
+            cursor = conn.execute('INSERT INTO accounts(email,password_hash,display_name) VALUES (?,?,?)',
+                                  (email, hash_password(request.password), request.display_name.strip()))
+            return {'account': account(cursor.lastrowid), 'message': 'Account created'}
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, 'An account with this email already exists')
 
-@app.get("/", response_model=HealthResponse)
-async def health_check():
-    """Health check endpoint"""
-    return HealthResponse(
-        status="healthy",
-        message="Movie Recommender API is running! 🎬",
-        model_loaded=model_handler is not None
-    )
 
-@app.get("/movies")
-async def get_all_movies():
-    """Get all available movies"""
-    try:
-        movies_list = movies_df[['movieId', 'title', 'genres']].to_dict('records')
-        return {
-            "total_movies": len(movies_list),
-            "movies": movies_list[:100]  # Return first 100 for performance
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching movies: {str(e)}")
+@app.post('/auth/login')
+async def login(request: LoginRequest):
+    with db() as conn:
+        row = conn.execute('SELECT * FROM accounts WHERE email=?', (request.email.strip().lower(),)).fetchone()
+    if not row or not verify_password(request.password, row['password_hash']):
+        raise HTTPException(401, 'Invalid email or password')
+    return {'account': account(row['id'])}
 
-@app.get("/users")
-async def get_all_users():
-    """Get all available users"""
-    try:
-        unique_users = sorted(movies_df['userId'].unique().tolist())
-        return {
-            "total_users": len(unique_users),
-            "users": unique_users[:50]  # Return first 50 users
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching users: {str(e)}")
 
-@app.post("/recommend", response_model=RecommendationResponse)
-async def get_recommendations(request: RecommendationRequest):
-    """Get movie recommendations for a user"""
-    try:
-        if model_handler is None:
-            raise HTTPException(status_code=500, detail="Model not loaded")
-        
-        # Get recommendations from model
-        recommendations = model_handler.get_recommendations(
-            user_id=request.user_id,
-            top_k=request.top_k
-        )
-        
-        if not recommendations:
-            raise HTTPException(
-                status_code=404, 
-                detail=f"No recommendations found for user {request.user_id}"
-            )
-        
-        # Format response
-        movie_recommendations = [
-            MovieRecommendation(
-                movie_id=rec['movieId'],
-                title=rec['title'],
-                genres=rec['genres'],
-                predicted_rating=round(rec['predicted_rating'], 2)
-            )
-            for rec in recommendations
-        ]
-        
-        return RecommendationResponse(
-            user_id=request.user_id,
-            recommendations=movie_recommendations,
-            total_recommendations=len(movie_recommendations)
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error generating recommendations: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error generating recommendations: {str(e)}")
+@app.get('/movies/search')
+async def search_movies(q: str = '', genre: Optional[str] = None, limit: int = Query(40, ge=1, le=100)):
+    return {'movies': model_handler.search_movies(q, genre, limit), 'genres': model_handler.genres()}
 
-@app.get("/user/{user_id}/history")
-async def get_user_history(user_id: int):
-    """Get rating history for a specific user"""
-    try:
-        user_ratings = movies_df[movies_df['userId'] == user_id]
-        
-        if user_ratings.empty:
-            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-        
-        # Sort by rating (highest first)
-        user_ratings = user_ratings.sort_values('rating', ascending=False)
-        
-        history = user_ratings[['movieId', 'title', 'genres', 'rating']].to_dict('records')
-        
-        return {
-            "user_id": user_id,
-            "total_ratings": len(history),
-            "average_rating": round(user_ratings['rating'].mean(), 2),
-            "rating_history": history
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching user history: {str(e)}")
 
-@app.post("/rate")
-async def add_rating(rating: UserRating):
-    """Add a new rating (for demo purposes)"""
-    try:
-        # In a real application, you'd save this to a database
-        # For now, we'll just return success
-        return {
-            "message": f"Rating added successfully! User {rating.user_id} rated movie {rating.movie_id} with {rating.rating} stars",
-            "user_id": rating.user_id,
-            "movie_id": rating.movie_id,
-            "rating": rating.rating
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error adding rating: {str(e)}")
+@app.get('/movies/{movie_id}/similar')
+async def similar_movies(movie_id: int, limit: int = Query(8, ge=1, le=20)):
+    return {'movie': movie(movie_id), 'movies': model_handler.similar_movies(movie_id, limit)}
 
-if __name__ == "__main__":
-    uvicorn.run(
-        "app:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info"
-    )
+
+def ratings_for(account_id):
+    with db() as conn:
+        return [dict(r) for r in conn.execute('SELECT movie_id, rating FROM user_ratings WHERE account_id=?', (account_id,))]
+
+
+@app.post('/recommend')
+async def recommend(request: RecommendationRequest):
+    account(request.account_id)
+    ratings = ratings_for(request.account_id)
+    if not ratings:
+        return {'account_id': request.account_id, 'recommendations': [], 'message': 'Rate a few movies to get recommendations'}
+    recommendations = model_handler.cold_start_recommendations(ratings, request.top_k)
+    return {'account_id': request.account_id, 'recommendations': [
+        {'movie_id': item['movieId'], 'title': item['title'], 'genres': item['genres'],
+         'predicted_rating': round(item.get('predicted_rating', 0), 2)} for item in recommendations]}
+
+
+@app.post('/ratings')
+async def add_rating(request: RatingRequest):
+    account(request.account_id); movie(request.movie_id)
+    with db() as conn:
+        conn.execute('INSERT INTO user_ratings(account_id,movie_id,rating) VALUES(?,?,?) '
+                     'ON CONFLICT(account_id,movie_id) DO UPDATE SET rating=excluded.rating, updated_at=CURRENT_TIMESTAMP',
+                     (request.account_id, request.movie_id, request.rating))
+    return {'message': 'Rating saved', 'movie_id': request.movie_id, 'rating': request.rating}
+
+
+@app.get('/accounts/{account_id}/ratings')
+async def get_ratings(account_id: int):
+    account(account_id)
+    with db() as conn:
+        rows = conn.execute('SELECT movie_id, rating FROM user_ratings WHERE account_id=? ORDER BY updated_at DESC', (account_id,)).fetchall()
+    return {'ratings': [{**movie(r['movie_id']), 'rating': r['rating']} for r in rows]}
+
+
+@app.get('/accounts/{account_id}/watchlist')
+async def get_watchlist(account_id: int):
+    account(account_id)
+    with db() as conn:
+        rows = conn.execute('SELECT movie_id FROM watchlist WHERE account_id=? ORDER BY added_at DESC', (account_id,)).fetchall()
+    return {'movies': [movie(r['movie_id']) for r in rows]}
+
+
+@app.post('/watchlist')
+async def add_watchlist(request: WatchlistRequest):
+    account(request.account_id); movie(request.movie_id)
+    with db() as conn:
+        conn.execute('INSERT OR IGNORE INTO watchlist(account_id,movie_id) VALUES(?,?)', (request.account_id, request.movie_id))
+    return {'message': 'Added to watchlist'}
+
+
+@app.delete('/watchlist/{account_id}/{movie_id}')
+async def remove_watchlist(account_id: int, movie_id: int):
+    account(account_id)
+    with db() as conn:
+        conn.execute('DELETE FROM watchlist WHERE account_id=? AND movie_id=?', (account_id, movie_id))
+    return {'message': 'Removed from watchlist'}
+
+
+if __name__ == '__main__':
+    uvicorn.run('app:app', host='0.0.0.0', port=8000, reload=True)

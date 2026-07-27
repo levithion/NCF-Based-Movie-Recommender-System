@@ -1,294 +1,162 @@
-import streamlit as st
+import os
 import requests
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from typing import List, Dict
-import time
+import streamlit as st
 
-# Configure Streamlit page
-st.set_page_config(
-    page_title="🎬 AI Movie Recommender",
-    page_icon="🎬",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title='CineMatch', page_icon='🎞️', layout='wide', initial_sidebar_state='expanded')
+API = os.getenv('CINEMATCH_API_URL', 'http://localhost:8000').rstrip('/')
 
-# Custom CSS for better styling
-st.markdown("""
+st.markdown('''
 <style>
-    .main-header {
-        font-size: 3rem;
-        color: #FF6B6B;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .movie-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 0.5rem 0;
-        color: white;
-    }
-    .rating-badge {
-        background: #FFD700;
-        color: #000;
-        padding: 0.2rem 0.5rem;
-        border-radius: 15px;
-        font-weight: bold;
-    }
-    .genre-tag {
-        background: #4ECDC4;
-        color: white;
-        padding: 0.2rem 0.5rem;
-        border-radius: 5px;
-        margin: 0.1rem;
-        display: inline-block;
-        font-size: 0.8rem;
-    }
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Space+Grotesk:wght@500;700&display=swap');
+html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
+h1,h2,h3 { font-family: 'Space Grotesk', sans-serif; letter-spacing: -.03em; }
+.stApp { background: #0b0d12; color: #f4f1ea; }
+[data-testid="stSidebar"] { background: #11141b; border-right: 1px solid #242936; }
+.brand { font-family:'Space Grotesk'; font-size: 2rem; font-weight:700; color:#f7c873; margin: .4rem 0 2rem; }
+.eyebrow { color:#f7c873; text-transform:uppercase; letter-spacing:.16em; font-size:.72rem; font-weight:700; }
+.hero { background:linear-gradient(110deg,#171a24,#202331); border:1px solid #303545; border-radius:20px; padding:2.4rem; margin-bottom:1.5rem; }
+.hero h1 { font-size:3.1rem; margin:.35rem 0; }
+.muted { color:#a6acba; }
+.card { background:#151821; border:1px solid #292e3b; border-radius:14px; padding:1rem 1.1rem; min-height:125px; margin-bottom:.7rem; }
+.card h3 { margin:.1rem 0 .35rem; font-size:1.05rem; }
+.tag { display:inline-block; color:#b9c0d0; background:#252a37; border-radius:99px; padding:.2rem .55rem; margin:.1rem .2rem .1rem 0; font-size:.72rem; }
+.score { color:#f7c873; font-weight:700; float:right; }
+.section { margin:1.5rem 0 .7rem; }
+div.stButton > button { border-radius:8px; border:1px solid #3a4152; background:#1d2230; color:#f4f1ea; }
+div.stButton > button:hover { border-color:#f7c873; color:#f7c873; }
+div[data-testid="stMetric"] { background:#151821; border:1px solid #292e3b; padding:1rem; border-radius:12px; }
 </style>
-""", unsafe_allow_html=True)
+''', unsafe_allow_html=True)
 
-# Backend API configuration
-API_BASE_URL = "https://ncf-based-movie-recommender-system.onrender.com"
 
-class MovieRecommenderApp:
-    def __init__(self):
-        self.api_url = API_BASE_URL
-    
-    def check_api_health(self):
-        """Check if backend API is running"""
-        try:
-            response = requests.get(f"{self.api_url}/")
-            return response.status_code == 200
-        except:
-            return False
-    
-    def get_users(self):
-        """Get list of available users"""
-        try:
-            response = requests.get(f"{self.api_url}/users")
-            if response.status_code == 200:
-                return response.json()["users"]
-            return []
-        except:
-            return []
-    
-    def get_recommendations(self, user_id: int, top_k: int = 10):
-        """Get movie recommendations for a user"""
-        try:
-            response = requests.post(
-                f"{self.api_url}/recommend",
-                json={"user_id": user_id, "top_k": top_k}
-            )
-            if response.status_code == 200:
-                return response.json()
-            return None
-        except:
-            return None
-    
-    def get_user_history(self, user_id: int):
-        """Get user's rating history"""
-        try:
-            response = requests.get(f"{self.api_url}/user/{user_id}/history")
-            if response.status_code == 200:
-                return response.json()
-            return None
-        except:
-            return None
+def api(method, path, **kwargs):
+    try:
+        response = requests.request(method, f'{API}{path}', timeout=20, **kwargs)
+        if response.ok:
+            return response.json()
+        st.error(response.json().get('detail', 'Something went wrong.'))
+    except requests.RequestException:
+        st.error(f'Cannot reach the CineMatch API at {API}. Start the backend or set CINEMATCH_API_URL.')
+    return None
+
+
+def tags(genres):
+    return ''.join(f'<span class="tag">{g}</span>' for g in str(genres).split('|') if g and g != '(no genres listed)')
+
+
+def movie_card(item, account_id=None, action='watch'):
+    movie_id = item.get('movie_id', item.get('movieId'))
+    score = item.get('predicted_rating')
+    score_html = f'<span class="score">★ {score}</span>' if score else ''
+    st.markdown(f'<div class="card"><h3>{score_html}{item["title"]}</h3><div>{tags(item["genres"])}</div></div>', unsafe_allow_html=True)
+    if account_id and action == 'watch':
+        if st.button('＋ Watchlist', key=f'watch-{movie_id}'):
+            api('POST', '/watchlist', json={'account_id': account_id, 'movie_id': int(movie_id)})
+            st.toast('Added to watchlist')
+    elif account_id and action == 'remove':
+        if st.button('Remove', key=f'remove-{movie_id}'):
+            api('DELETE', f'/watchlist/{account_id}/{movie_id}')
+            st.rerun()
+
+
+def auth_screen():
+    st.markdown('<div class="brand">CineMatch</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero"><div class="eyebrow">Your next favorite film</div><h1>Less scrolling.<br>More watching.</h1><p class="muted">A personal movie space powered by your taste.</p></div>', unsafe_allow_html=True)
+    login, signup = st.tabs(['Sign in', 'Create account'])
+    with login:
+        with st.form('login'):
+            email = st.text_input('Email')
+            password = st.text_input('Password', type='password')
+            if st.form_submit_button('Sign in', type='primary'):
+                result = api('POST', '/auth/login', json={'email': email, 'password': password})
+                if result:
+                    st.session_state.account = result['account']; st.rerun()
+    with signup:
+        with st.form('signup'):
+            name = st.text_input('Name')
+            email = st.text_input('Email', key='signup-email')
+            password = st.text_input('Password (6+ characters)', type='password', key='signup-password')
+            if st.form_submit_button('Create account', type='primary'):
+                result = api('POST', '/auth/signup', json={'display_name': name, 'email': email, 'password': password})
+                if result:
+                    st.session_state.account = result['account']; st.rerun()
+
+
+def home(account_id):
+    st.markdown('<div class="hero"><div class="eyebrow">Personalised for you</div><h1>Find something<br>worth your evening.</h1><p class="muted">Rate a few films and CineMatch will learn your rhythm.</p></div>', unsafe_allow_html=True)
+    ratings = api('GET', f'/accounts/{account_id}/ratings') or {'ratings': []}
+    if len(ratings['ratings']) < 5:
+        st.info(f'Rate {5 - len(ratings["ratings"])} more movie(s) to unlock your recommendations.')
+        discover(account_id, onboarding=True)
+        return
+    result = api('POST', '/recommend', json={'account_id': account_id, 'top_k': 12})
+    st.markdown('<h2 class="section">Picked for you</h2>', unsafe_allow_html=True)
+    if result and result.get('recommendations'):
+        cols = st.columns(3)
+        for i, item in enumerate(result['recommendations']):
+            with cols[i % 3]: movie_card(item, account_id)
+
+
+def discover(account_id, onboarding=False):
+    st.markdown('<div class="eyebrow">Discover</div><h1>Browse the catalog</h1>', unsafe_allow_html=True)
+    q = st.text_input('Search by title', placeholder='Try “Inception”, “Star Wars”…')
+    result = api('GET', '/movies/search', params={'q': q, 'limit': 50})
+    if not result: return
+    genres = ['All genres'] + result.get('genres', [])
+    genre = st.selectbox('Filter by genre', genres)
+    if genre != 'All genres': result = api('GET', '/movies/search', params={'q': q, 'genre': genre, 'limit': 50}) or result
+    st.caption(f'{len(result.get("movies", []))} movies')
+    cols = st.columns(3)
+    for i, item in enumerate(result.get('movies', [])):
+        with cols[i % 3]:
+            movie_card(item, account_id)
+            with st.expander('Rate / similar'):
+                rating = st.slider('Your rating', .5, 5., 4., .5, key=f'rate-{item["movieId"]}')
+                if st.button('Save rating', key=f'save-{item["movieId"]}'):
+                    api('POST', '/ratings', json={'account_id': account_id, 'movie_id': item['movieId'], 'rating': rating})
+                    st.toast('Taste updated'); st.rerun()
+                if st.button('Show similar', key=f'similar-{item["movieId"]}'):
+                    similar = api('GET', f'/movies/{item["movieId"]}/similar')
+                    if similar:
+                        st.write('Because you may like:')
+                        for match in similar['movies'][:4]: st.write(f'• {match["title"]}')
+
+
+def watchlist(account_id):
+    st.markdown('<div class="eyebrow">Saved for later</div><h1>Watchlist</h1>', unsafe_allow_html=True)
+    result = api('GET', f'/accounts/{account_id}/watchlist')
+    movies = result.get('movies', []) if result else []
+    if not movies: st.info('Your watchlist is empty. Save films from Discover.'); return
+    cols = st.columns(3)
+    for i, item in enumerate(movies):
+        with cols[i % 3]: movie_card(item, account_id, 'remove')
+
+
+def profile(account_id):
+    st.markdown('<div class="eyebrow">Your taste</div><h1>Profile</h1>', unsafe_allow_html=True)
+    result = api('GET', f'/accounts/{account_id}/ratings') or {'ratings': []}
+    ratings = result['ratings']
+    c1, c2 = st.columns(2); c1.metric('Films rated', len(ratings)); c2.metric('Average rating', f'{sum(x["rating"] for x in ratings)/len(ratings):.1f}' if ratings else '—')
+    if ratings:
+        st.subheader('Your ratings')
+        for item in ratings: st.write(f'★ {item["rating"]:.1f}  ·  {item["title"]}')
+
 
 def main():
-    app = MovieRecommenderApp()
-    
-    # Header
-    st.markdown('<h1 class="main-header">🎬 AI Movie Recommender</h1>', unsafe_allow_html=True)
-    st.markdown("### Powered by Neural Collaborative Filtering 🧠✨")
-    
-    # Check API health
-    if not app.check_api_health():
-        st.error("🚨 Backend API is not running! Please start the FastAPI server first.")
-        st.code("cd backend && python app.py")
-        return
-    
-    st.success("✅ Connected to AI Movie Recommender API!")
-    
-    # Sidebar for user selection
-    st.sidebar.header("🎯 User Selection")
-    
-    # Get available users
-    users = app.get_users()
-    if not users:
-        st.error("No users found in the system!")
-        return
-    
-    selected_user = st.sidebar.selectbox(
-        "Choose a User ID:",
-        users,
-        help="Select a user to get personalized movie recommendations"
-    )
-    
-    # Number of recommendations
-    num_recommendations = st.sidebar.slider(
-        "Number of Recommendations:",
-        min_value=5,
-        max_value=20,
-        value=10,
-        help="How many movie recommendations do you want?"
-    )
-    
-    # Main content area
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.header(f"🌟 Recommendations for User {selected_user}")
-        
-        if st.button("🎬 Get Movie Recommendations", type="primary"):
-            with st.spinner("🤖 AI is analyzing your preferences..."):
-                recommendations = app.get_recommendations(selected_user, num_recommendations)
-                
-                if recommendations:
-                    st.success(f"Found {len(recommendations['recommendations'])} perfect movies for you!")
-                    
-                    # Display recommendations
-                    for i, movie in enumerate(recommendations['recommendations'], 1):
-                        with st.container():
-                            st.markdown(f"""
-                            <div class="movie-card">
-                                <h3>#{i} {movie['title']}</h3>
-                                <p><span class="rating-badge">⭐ {movie['predicted_rating']}/5.0</span></p>
-                                <p><strong>Genres:</strong> {movie['genres']}</p>
-                            </div>
-                            """, unsafe_allow_html=True)
-                else:
-                    st.error("No recommendations found for this user!")
-    
-    with col2:
-        st.header("📊 User Profile")
-        
-        # Get user history
-        user_history = app.get_user_history(selected_user)
-        
-        if user_history:
-            st.metric("Total Ratings", user_history['total_ratings'])
-            st.metric("Average Rating", f"{user_history['average_rating']}/5.0")
-            
-            # Rating distribution chart
-            if user_history['rating_history']:
-                ratings_df = pd.DataFrame(user_history['rating_history'])
-                
-                fig = px.histogram(
-                    ratings_df, 
-                    x='rating',
-                    title=f"Rating Distribution for User {selected_user}",
-                    nbins=10,
-                    color_discrete_sequence=['#FF6B6B']
-                )
-                fig.update_layout(height=300)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Top rated movies
-                st.subheader("🏆 Your Top Rated Movies")
-                top_movies = ratings_df.head(5)
-                
-                for _, movie in top_movies.iterrows():
-                    st.markdown(f"""
-                    <div style="background: #f0f2f6; padding: 0.5rem; border-radius: 5px; margin: 0.2rem 0;">
-                        <strong>{movie['title']}</strong><br>
-                        <span style="color: #FFD700;">{'⭐' * int(movie['rating'])}</span> {movie['rating']}/5.0
-                    </div>
-                    """, unsafe_allow_html=True)
-        else:
-            st.info("No rating history found for this user.")
-    
-    # Additional features
-    st.header("🔍 Explore More")
-    
-    tab1, tab2, tab3 = st.tabs(["📈 Analytics", "🎭 Movie Database", "ℹ️ About"])
-    
-    with tab1:
-        st.subheader("System Analytics")
-        
-        # Create some sample analytics
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Total Users", len(users))
-        with col2:
-            st.metric("AI Model", "NeuMF")
-        with col3:
-            st.metric("Accuracy", "65%+")
-        with col4:
-            st.metric("Status", "🟢 Online")
-        
-        # Sample performance chart
-        performance_data = {
-            'Metric': ['RMSE', 'MAE', 'Accuracy (±0.5)', 'Accuracy (±1.0)'],
-            'Value': [0.75, 0.58, 65, 85],
-            'Target': [0.70, 0.55, 70, 90]
-        }
-        
-        perf_df = pd.DataFrame(performance_data)
-        fig = go.Figure()
-        
-        fig.add_trace(go.Bar(name='Current', x=perf_df['Metric'], y=perf_df['Value'], marker_color='#FF6B6B'))
-        fig.add_trace(go.Bar(name='Target', x=perf_df['Metric'], y=perf_df['Target'], marker_color='#4ECDC4'))
-        
-        fig.update_layout(title='Model Performance Metrics', barmode='group')
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with tab2:
-        st.subheader("Movie Database")
-        st.info("🚧 Coming Soon: Browse all movies, search by genre, and explore movie details!")
-        
-        # Placeholder for movie database features
-        st.markdown("""
-        **Planned Features:**
-        - 🔍 Search movies by title or genre
-        - 📊 Movie popularity rankings
-        - 🎭 Genre-based filtering
-        - ⭐ Community ratings overview
-        """)
-    
-    with tab3:
-        st.subheader("About This AI Movie Recommender")
-        
-        st.markdown("""
-        ### 🧠 How It Works
-        
-        This movie recommender uses **Neural Collaborative Filtering (NCF)** with the **NeuMF architecture**:
-        
-        1. **Embedding Layers**: Learn user and movie representations
-        2. **MLP Path**: Captures complex non-linear patterns
-        3. **GMF Path**: Handles linear matrix factorization
-        4. **Combined Prediction**: Merges both approaches for better accuracy
-        
-        ### 🚀 Technology Stack
-        
-        **Backend:**
-        - FastAPI for REST API
-        - PyTorch for deep learning
-        - Neural Collaborative Filtering model
-        
-        **Frontend:**
-        - Streamlit for web interface
-        - Plotly for interactive charts
-        - Modern CSS styling
-        
-        ### 📊 Model Performance
-        
-        - **Architecture**: NeuMF (Neural Matrix Factorization)
-        - **Training**: 100 epochs with MPS acceleration
-        - **Accuracy**: 65%+ within ±0.5 stars
-        - **RMSE**: ~0.75 (lower is better)
-        
-        ### 🎯 Features
-        
-        ✅ Personalized recommendations  
-        ✅ User rating history analysis  
-        ✅ Real-time predictions  
-        ✅ Interactive visualizations  
-        ✅ RESTful API  
-        """)
+    if 'account' not in st.session_state:
+        auth_screen(); return
+    acc = st.session_state.account; account_id = acc['id']
+    with st.sidebar:
+        st.markdown('<div class="brand">CineMatch</div>', unsafe_allow_html=True)
+        st.caption(f'Welcome, {acc["display_name"]}')
+        page = st.radio('Navigate', ['Home', 'Discover', 'Watchlist', 'Profile'], label_visibility='collapsed')
+        st.divider()
+        if st.button('Sign out'):
+            del st.session_state.account; st.rerun()
+    if page == 'Home': home(account_id)
+    elif page == 'Discover': discover(account_id)
+    elif page == 'Watchlist': watchlist(account_id)
+    else: profile(account_id)
 
-if __name__ == "__main__":
-    main()
+
+if __name__ == '__main__': main()
