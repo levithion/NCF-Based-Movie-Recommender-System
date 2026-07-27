@@ -33,6 +33,8 @@ data/
 
 Use Python 3.9+ and install the two requirement files:
 
+Render is pinned to Python 3.11 through `.python-version` because the PyTorch checkpoint should use a prebuilt compatible wheel rather than attempting a source build on the newest Python runtime.
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
