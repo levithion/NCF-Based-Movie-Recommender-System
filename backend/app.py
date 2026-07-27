@@ -18,7 +18,10 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from model_handler import MovieRecommenderModel
+try:
+    from .model_handler import MovieRecommenderModel
+except ImportError:
+    from model_handler import MovieRecommenderModel
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_PATH = ROOT / 'data' / 'movies_data.csv'
@@ -32,6 +35,7 @@ movies_df = None
 
 
 def db():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
     return connection
