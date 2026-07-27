@@ -59,6 +59,14 @@ export CINEMATCH_API_URL=https://your-api.example.com
 streamlit run frontend/streamlit_app.py
 ```
 
+For Streamlit Community Cloud, add this to the app's **Settings → Secrets**. `localhost` will not work for a hosted frontend:
+
+```toml
+CINEMATCH_API_URL = "https://your-public-backend.example.com"
+```
+
+The FastAPI backend must be deployed separately on a public HTTPS URL (for example, Render, Railway, or Fly.io). Use that URL as the secret value, without a trailing endpoint such as `/docs`.
+
 The SQLite database is created automatically on first API startup. It is intentionally local for this project; use a managed database and real session/token authentication before deploying for multiple users.
 
 ## API overview

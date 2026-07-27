@@ -3,7 +3,10 @@ import requests
 import streamlit as st
 
 st.set_page_config(page_title='CineMatch', page_icon='🎞️', layout='wide', initial_sidebar_state='expanded')
-API = os.getenv('CINEMATCH_API_URL', 'http://localhost:8000').rstrip('/')
+if 'CINEMATCH_API_URL' in st.secrets:
+    API = st.secrets['CINEMATCH_API_URL'].rstrip('/')
+else:
+    API = os.getenv('CINEMATCH_API_URL', 'http://localhost:8000').rstrip('/')
 
 st.markdown('''
 <style>
