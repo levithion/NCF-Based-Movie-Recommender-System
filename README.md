@@ -1,39 +1,113 @@
-# CineMatch — NCF Movie Recommender
+# 🎬 CineMatch
 
-CineMatch is a Streamlit movie discovery app backed by a PyTorch Neural Collaborative Filtering model. It combines learned movie embeddings with a lightweight SQLite product layer so users can create accounts, rate films, receive recommendations, search the catalog, find similar movies, and maintain a watchlist.
+[![Streamlit](https://img.shields.io/badge/UI-Streamlit-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
+[![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![PyTorch](https://img.shields.io/badge/Model-PyTorch-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![IMDb](https://img.shields.io/badge/Metadata-IMDb-F5C518?logo=imdb&logoColor=black)](https://www.imdb.com/)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://choosealicense.com/licenses/mit/)
 
-## What is included
+## ✨ AI-powered movie discovery app
 
-- Account creation and login with PBKDF2-hashed passwords
-- New-user onboarding through movie ratings
-- Personalized recommendations after five ratings
-- Search by title and filter by genre
-- IMDb/OMDb search for new movies and poster artwork
-- Similar-movie recommendations from learned movie embeddings
-- Persistent ratings and watchlists in `backend/recommender.db`
-- A redesigned dark, cinematic Streamlit interface
-- FastAPI endpoints that can also support a mobile or React client
+CineMatch is a personalized movie discovery application built for people who want better recommendations without endlessly scrolling. Users can create an account, rate movies, discover personalized suggestions, search IMDb-linked movie data, view posters, find similar films, and save movies to a watchlist.
 
-The feedback loop is designed for immediate demo feedback: ratings are saved to SQLite and recommendations are regenerated using the hybrid scorer. Known movies combine the NCF movie-bias prior, content similarity, and popularity. New catalog movies with no NCF embedding use content similarity and popularity until they collect ratings. The original NCF checkpoint is not modified on every click; ratings can later be used for scheduled retraining.
+The application combines a Streamlit interface with a FastAPI backend and a hybrid recommendation engine built on the existing PyTorch NCF model.
 
-## Project structure
+## 🍿 What users can do
+
+### 🔐 Create an account
+
+Users can sign up with a name, email, and password, then sign in to their personal CineMatch profile.
+
+### ⭐ Rate movies
+
+Users rate movies from 0.5 to 5 stars. These ratings form a personal taste profile and immediately influence future recommendations.
+
+### 🎯 Get personalized recommendations
+
+After rating a few movies, users receive a curated “Picked for you” list. Recommendations exclude movies they have already rated.
+
+### 🔎 Search the CineMatch catalog
+
+Users can search movies by title and filter results by genre. Catalog movie cards can show poster artwork, genres, ratings, and actions such as rating, finding similar movies, or adding to a watchlist.
+
+### 🎞️ Search IMDb-linked movie data
+
+The IMDb Search area uses OMDb to search a much larger external movie catalog. Users can search titles that are not currently in MovieLens, view posters and release years, and import a movie into CineMatch.
+
+### 🧠 Discover similar movies
+
+Users can request movies similar to a selected title. Similarity is calculated from movie representations and content features such as title and genre.
+
+### 📌 Maintain a watchlist
+
+Users can save movies for later and remove them when they have watched them.
+
+### 👤 View a personal profile
+
+The Profile page shows the number of rated films, average rating, and rating history.
+
+## 🤖 How recommendations work
+
+CineMatch uses a hybrid recommendation strategy:
+
+```text
+NCF collaborative signal
+        +
+Content similarity from title and genres
+        +
+Movie popularity
+        =
+Personalized recommendation score
+```
+
+- Existing movies use learned NCF signals, content similarity, and popularity.
+- New movies without historical ratings use content similarity and popularity.
+- New movies can therefore be searched, imported, and recommended before they have enough user ratings for model retraining.
+- New user ratings are stored immediately and update the user's recommendation profile.
+
+The NCF checkpoint is not retrained after every rating. Ratings can be collected for scheduled model retraining later.
+
+## 🏗️ Application architecture
+
+```text
+Streamlit frontend
+        ↓
+FastAPI backend
+        ↓
+Hybrid recommendation engine
+        ↓
+PyTorch NCF model + TF-IDF content features
+        ↓
+SQLite account, rating, watchlist, and imported-movie storage
+```
+
+### 🧰 Technology stack
+
+- Streamlit — user interface
+- FastAPI — backend API
+- PyTorch — Neural Collaborative Filtering model
+- scikit-learn — TF-IDF and content similarity
+- SQLite — accounts, ratings, watchlists, and imported catalog movies
+- OMDb API — IMDb-linked search, movie details, and poster URLs
+- MovieLens — training ratings and initial movie catalog
+
+## 🗂️ Project structure
 
 ```text
 backend/
-  app.py                 FastAPI API, authentication, SQLite persistence
-  model_handler.py       NCF inference, search, similarity, cold start
-  models/final_model.pth trained checkpoint
+  app.py                 FastAPI routes and persistence
+  model_handler.py       NCF and hybrid recommendation logic
+  models/final_model.pth trained model checkpoint
 frontend/
-  streamlit_app.py       Streamlit-only user interface
+  streamlit_app.py       Streamlit application
 data/
-  movies_data.csv        MovieLens ratings joined with movie metadata
+  movies_data.csv        Joined MovieLens ratings and metadata
+  ml-latest-small/       Original MovieLens files
 ```
 
-## Run locally
+## 🚀 Run locally
 
-Use Python 3.9+ and install the two requirement files:
-
-Render is pinned to Python 3.11 through `.python-version` because the PyTorch checkpoint should use a prebuilt compatible wheel rather than attempting a source build on the newest Python runtime.
+Python 3.11 is recommended because it has compatible prebuilt PyTorch wheels. The repository includes `.python-version` files for Render and local version managers.
 
 ```bash
 python3 -m venv .venv
@@ -42,71 +116,75 @@ pip install -r backend/requirements.txt
 pip install -r frontend/requirements.txt
 ```
 
-Start the API from the repository root:
+Start the backend from the repository root:
 
 ```bash
 cd backend
 python3 app.py
 ```
 
-In another terminal, from the repository root:
+Start Streamlit in a second terminal:
 
 ```bash
 streamlit run frontend/streamlit_app.py
 ```
 
-The Streamlit app defaults to `http://localhost:8000`. To point it at a deployed API:
+The local frontend uses `http://localhost:8000` by default. For a deployed backend:
 
 ```bash
-export CINEMATCH_API_URL=https://your-api.example.com
+export CINEMATCH_API_URL="https://your-backend.example.com"
 streamlit run frontend/streamlit_app.py
 ```
 
-For Streamlit Community Cloud, add this to the app's **Settings → Secrets**. `localhost` will not work for a hosted frontend:
+For Streamlit Community Cloud, add this under **App settings → Secrets**:
 
 ```toml
-CINEMATCH_API_URL = "https://your-public-backend.example.com"
+CINEMATCH_API_URL = "https://your-backend.example.com"
 ```
 
-The FastAPI backend must be deployed separately on a public HTTPS URL (for example, Render, Railway, or Fly.io). Use that URL as the secret value, without a trailing endpoint such as `/docs`.
+## 🌐 IMDb/OMDb setup
 
-### IMDb/OMDb integration
-
-The app uses the OMDb API for IMDb-linked title search, IMDb IDs, movie details, and poster URLs. OMDb requires an API key; request one from the [official OMDb API page](https://www.omdbapi.com/apikey.aspx), then configure it only on the backend host:
+The backend uses OMDb for IMDb-linked title search and poster images. Create an API key from the [official OMDb API page](https://www.omdbapi.com/apikey.aspx), then add it to the backend deployment only:
 
 ```text
 OMDB_API_KEY=your_omdb_key
 ```
 
-On Render, add `OMDB_API_KEY` under the backend service's Environment settings and redeploy. The Streamlit frontend never receives this key. In Discover → IMDb search, users can search a title, view posters, and import a movie into the CineMatch catalog. Imported movies are stored in SQLite and become available to the hybrid recommender.
+On Render, add `OMDB_API_KEY` under the web service's Environment settings and redeploy. Never commit the key to GitHub or add it to the Streamlit frontend.
 
-The SQLite database is created automatically on first API startup. For Render, attach a persistent disk and set `CINEMATCH_DB_PATH=/var/data/recommender.db`; otherwise accounts, ratings, and watchlists can disappear when the service is redeployed or restarted. For a larger deployment, use a managed database and real session/token authentication.
+## ☁️ Persistence and deployment
 
-## API overview
+The backend creates `backend/recommender.db` automatically for local use. For Render, configure a persistent disk mounted at `/var/data` and add:
+
+```text
+CINEMATCH_DB_PATH=/var/data/recommender.db
+```
+
+Without persistent storage, accounts, ratings, watchlists, and imported movies may be lost when the service is redeployed or restarted. A managed PostgreSQL database is recommended for production.
+
+## 🔌 API overview
 
 | Method | Endpoint | Purpose |
 |---|---|---|
 | POST | `/auth/signup` | Create an account |
 | POST | `/auth/login` | Sign in |
-| GET | `/movies/search?q=&genre=` | Search and filter movies |
+| GET | `/movies/search?q=&genre=` | Search the CineMatch catalog |
+| GET | `/external/movies/search?q=` | Search IMDb-linked OMDb data |
+| GET | `/external/movies/{imdb_id}` | Get external movie details |
+| POST | `/catalog/import` | Import an external movie |
 | GET | `/movies/{movie_id}/similar` | Find similar movies |
 | POST | `/ratings` | Save or update a rating |
-| GET | `/accounts/{account_id}/ratings` | Read a user's ratings |
-| POST | `/recommend` | Generate personalized recommendations |
+| POST | `/recommend` | Generate recommendations |
 | GET | `/accounts/{account_id}/watchlist` | Read a watchlist |
-| POST | `/watchlist` | Add a movie to a watchlist |
+| POST | `/watchlist` | Add a movie |
 | DELETE | `/watchlist/{account_id}/{movie_id}` | Remove a movie |
 
-Interactive API documentation is available at `http://localhost:8000/docs` while the backend is running.
+When running locally, interactive API documentation is available at:
 
-## Model notes
+```text
+http://localhost:8000/docs
+```
 
-The checkpoint uses user and movie embeddings, bias terms, and an MLP prediction path. The hybrid layer builds TF-IDF content features from movie titles and genres. Add a new movie to `data/ml-latest-small/movies.csv` and redeploy the backend; it can then be searched and recommended without changing checkpoint dimensions. Recommendations exclude movies already rated by the account.
-
-## Dataset
-
-The project uses the MovieLens latest-small dataset from GroupLens. `data/movies_data.csv` is the joined ratings/movie metadata file used by the API. The original source files are retained under `data/ml-latest-small/`.
-
-## License
+## 📄 License
 
 [MIT](https://choosealicense.com/licenses/mit/)
