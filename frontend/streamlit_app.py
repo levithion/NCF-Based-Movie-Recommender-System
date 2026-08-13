@@ -67,6 +67,7 @@ h1,h2,h3 { font-family:'Space Grotesk', sans-serif; letter-spacing:-.04em; color
 .card { background:linear-gradient(145deg,#191c26,#14161e); border:1px solid #2d3240; border-radius:16px; padding:1rem 1.1rem; min-height:125px; margin-bottom:.7rem; box-shadow:0 10px 25px rgba(0,0,0,.14); transition:transform .2s,border-color .2s; }
 .card:hover { transform:translateY(-3px); border-color:#5b5360; }
 .card h3 { margin:.1rem 0 .35rem; font-size:1.05rem; }
+.description { color:#c5c9d3; font-size:.88rem; line-height:1.55; background:#11141b; border-left:2px solid #f7c873; border-radius:0 10px 10px 0; padding:.75rem .85rem; margin:.25rem 0 .75rem; }
 .tag { display:inline-block; color:#b9c0d0; background:#282b38; border-radius:99px; padding:.25rem .6rem; margin:.1rem .2rem .1rem 0; font-size:.7rem; }
 .score { color:#f7c873; font-weight:700; float:right; }
 .section { margin:2rem 0 .85rem; }
@@ -138,6 +139,13 @@ def movie_card(item, account_id=None, action='watch'):
     else:
         st.markdown('<div style="height:150px;width:100px;background:#252a37;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#a6acba;font-size:.75rem;text-align:center;">No poster</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="card"><h3>{score_html}{item["title"]}</h3><div>{tags(item.get("genres", ""))}</div></div>', unsafe_allow_html=True)
+    if st.button('Read description', key=f'description-{action}-{movie_id}'):
+        details = api('GET', f'/movies/{movie_id}/details')
+        description = details.get('description', '') if details else ''
+        if description:
+            st.markdown(f'<div class="description">{description}</div>', unsafe_allow_html=True)
+        else:
+            st.caption('Description unavailable. Add an OMDB_API_KEY to the backend to enable plots.')
     if account_id and action == 'watch':
         if st.button('＋ Watchlist', key=f'watch-{movie_id}'):
             api('POST', '/watchlist', json={'account_id': account_id, 'movie_id': int(movie_id)})

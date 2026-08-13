@@ -255,6 +255,23 @@ async def import_catalog_movie(request: CatalogImportRequest):
     return movie(new_id)
 
 
+@app.get('/movies/{movie_id}/details')
+async def movie_details(movie_id: int):
+    """Return local movie metadata plus its OMDb plot when available."""
+    details = movie(movie_id)
+    rows = model_handler.catalog[model_handler.catalog.movieId == movie_id]
+    imdb_id = str(rows.iloc[0].get('imdbId', '') or '') if not rows.empty else ''
+    details['description'] = ''
+    if OMDB_API_KEY and imdb_id:
+        try:
+            payload = omdb_request({'i': imdb_id, 'plot': 'full'})
+            details['description'] = payload.get('Plot', '') if payload.get('Plot') != 'N/A' else ''
+        except HTTPException:
+            # Keep the local movie usable if OMDb is unavailable or has no plot.
+            pass
+    return details
+
+
 @app.get('/movies/{movie_id}/similar')
 async def similar_movies(movie_id: int, limit: int = Query(8, ge=1, le=20)):
     return {'movie': movie(movie_id), 'movies': model_handler.similar_movies(movie_id, limit)}
