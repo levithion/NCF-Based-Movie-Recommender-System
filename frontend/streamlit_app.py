@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 import streamlit as st
 
@@ -7,6 +8,39 @@ if 'CINEMATCH_API_URL' in st.secrets:
     API = st.secrets['CINEMATCH_API_URL'].rstrip('/')
 else:
     API = os.getenv('CINEMATCH_API_URL', 'http://localhost:8000').rstrip('/')
+
+
+def wake_api():
+    """Wake a sleeping hosted backend and wait for its model to load.
+
+    Render's free web services sleep when idle. A request to the health endpoint
+    starts the service, but loading the PyTorch model can take longer than one
+    HTTP request timeout, so retry while the service is coming up.
+    """
+    delays = (0, 3, 6, 10, 15)
+    for delay in delays:
+        if delay:
+            time.sleep(delay)
+        try:
+            response = requests.get(f'{API}/', timeout=20)
+            if response.ok and response.json().get('status') == 'healthy':
+                return True
+        except (requests.RequestException, ValueError):
+            pass
+    return False
+
+
+if st.session_state.get('api_ready') is not True:
+    with st.spinner('Waking CineMatch…'):
+        api_ready = wake_api()
+    st.session_state.api_ready = api_ready
+else:
+    api_ready = True
+if not api_ready:
+    st.warning(
+        f'CineMatch is still starting at {API}. Please wait a moment and refresh; '
+        'you no longer need to open the backend link separately.'
+    )
 
 st.markdown('''
 <style>
@@ -33,13 +67,25 @@ div[data-testid="stMetric"] { background:#151821; border:1px solid #292e3b; padd
 
 
 def api(method, path, **kwargs):
-    try:
-        response = requests.request(method, f'{API}{path}', timeout=20, **kwargs)
-        if response.ok:
-            return response.json()
-        st.error(response.json().get('detail', 'Something went wrong.'))
-    except requests.RequestException:
-        st.error(f'Cannot reach the CineMatch API at {API}. Start the backend or set CINEMATCH_API_URL.')
+    # A service can go back to sleep between Streamlit reruns, so retry ordinary
+    # API calls as well as the initial wake-up request.
+    for attempt in range(3):
+        try:
+            response = requests.request(method, f'{API}{path}', timeout=20, **kwargs)
+            if response.ok:
+                return response.json()
+            try:
+                detail = response.json().get('detail', 'Something went wrong.')
+            except ValueError:
+                detail = f'Backend returned HTTP {response.status_code}.'
+            if response.status_code < 500:
+                st.error(detail)
+                return None
+        except requests.RequestException:
+            if attempt == 2:
+                break
+        time.sleep(2 * (attempt + 1))
+    st.error(f'Cannot reach the CineMatch API at {API}. It may still be waking up; refresh and try again.')
     return None
 
 
